@@ -4873,7 +4873,7 @@ local function getEnchantablePets(sortMethod, showIndividual)
                                 equipped = petData.Equipped or false,
                                 enchant = currentEnchant,
                                 tier = tier,
-                                display = petData.Name .. tierDisplay .. enchantDisplay .. " (" .. Framework:GetModule("Format"):FormatNumber(multiplier) .. "x) #" .. string.sub(petId, 1, 6)
+                                display = petData.Name .. tierDisplay .. enchantDisplay .. " (" .. Framework:GetModule("Format"):FormatNumber(multiplier) .. "x)" .. (petData.Equipped and " [EQUIPPED]" or "") .. " #" .. string.sub(petId, 1, 6)
                             })
                         end
                     end
@@ -4908,8 +4908,17 @@ local function getEnchantablePets(sortMethod, showIndividual)
             end)
         end
         
-        -- Return the array directly for individual mode
-        return #petsArray > 0 and petsArray or {{id = "none", name = "None", display = "No pets available"}}
+        -- Build display list
+        local displayList = {}
+        for _, petInfo in ipairs(petsArray) do
+            table.insert(displayList, {
+                id = petInfo.id,
+                name = petInfo.name,
+                display = petInfo.display
+            })
+        end
+        
+        return #displayList > 0 and displayList or {{id = "none", name = "None", display = "No pets available"}}
     else
         -- Grouped mode: Show pet names with counts (original behavior)
         local petsByName = {}
@@ -6703,6 +6712,38 @@ local function refreshEnchantPetList()
     Framework.UI.Options.EnchantPetSelect:SetValues(#displayValues > 0 and displayValues or {"No pets available"})
 end
 
+-- Add this BEFORE the "Exclude Rarities" dropdown in EnchantBox
+EnchantBox:AddToggle("ShowIndividualPetsEnchant", {
+    Text = "Show Individual Pet Instances",
+    Default = false,
+    Tooltip = "When enabled, shows each pet separately (with ID) instead of grouping by name",
+    Callback = function(Value)
+        Framework.State.showIndividualPetsEnchant = Value
+        
+        -- Refresh the pet list immediately
+        Framework:GetModule("Cache"):Invalidate("allGamePets")
+        Framework:GetModule("Cache"):Invalidate("ownedPetCounts")
+        
+        task.wait(0.1)
+        local petList = getEnchantablePets(Framework.State.enchantPetSortMethod, Value)
+        
+        local displayValues = {}
+        for _, pet in ipairs(petList) do
+            table.insert(displayValues, pet.display)
+        end
+        
+        Framework.UI.Options.EnchantPetSelect:SetValues(displayValues)
+        Framework.UI.Options.EnchantPetSelect:SetValue({})
+        Framework.State.selectedEnchantPets = {}
+        
+        if Value then
+            Framework.UI.Library:Notify("Now showing individual pet instances", 2)
+        else
+            Framework.UI.Library:Notify("Now showing grouped pets by name", 2)
+        end
+    end
+})
+
 -- Rarity exclusion dropdown
 EnchantBox:AddDropdown("EnchantExcludeRarities", {
     Values = (function()
@@ -6724,8 +6765,13 @@ EnchantBox:AddDropdown("EnchantExcludeRarities", {
             Framework.UI.Library:Notify("No rarities excluded from enchanting", 2)
         end
         
-        -- Refresh pet list
+        -- Refresh the pet list
+        Framework:GetModule("Cache"):Invalidate("allGamePets")
+        Framework:GetModule("Cache"):Invalidate("ownedPetCounts")
+        
+        task.wait(0.1)
         local petList = getEnchantablePets(Framework.State.enchantPetSortMethod, Framework.State.showIndividualPetsEnchant)
+        
         local displayValues = {}
         for _, pet in ipairs(petList) do
             table.insert(displayValues, pet.display)
@@ -6744,8 +6790,13 @@ EnchantBox:AddToggle("ExcludeEquippedEnchant", {
     Callback = function(Value)
         Framework.State.excludeEquippedEnchant = Value
         
-        -- Refresh pet list
+        -- Refresh the pet list
+        Framework:GetModule("Cache"):Invalidate("allGamePets")
+        Framework:GetModule("Cache"):Invalidate("ownedPetCounts")
+        
+        task.wait(0.1)
         local petList = getEnchantablePets(Framework.State.enchantPetSortMethod, Framework.State.showIndividualPetsEnchant)
+        
         local displayValues = {}
         for _, pet in ipairs(petList) do
             table.insert(displayValues, pet.display)
@@ -6759,32 +6810,6 @@ EnchantBox:AddToggle("ExcludeEquippedEnchant", {
             Framework.UI.Library:Notify("Now showing only unequipped pets", 2)
         else
             Framework.UI.Library:Notify("Now showing all pets", 2)
-        end
-    end
-})
-
-EnchantBox:AddToggle("ShowIndividualPetsEnchant", {
-    Text = "Show Individual Pet Instances",
-    Default = false,
-    Tooltip = "When enabled, shows each pet separately (with ID) instead of grouping by name",
-    Callback = function(Value)
-        Framework.State.showIndividualPetsEnchant = Value
-        
-        -- Refresh pet list
-        local petList = getEnchantablePets(Framework.State.enchantPetSortMethod, Value)
-        local displayValues = {}
-        for _, pet in ipairs(petList) do
-            table.insert(displayValues, pet.display)
-        end
-        
-        Framework.UI.Options.EnchantPetSelect:SetValues(displayValues)
-        Framework.UI.Options.EnchantPetSelect:SetValue({})
-        Framework.State.selectedEnchantPets = {}
-        
-        if Value then
-            Framework.UI.Library:Notify("Now showing individual pet instances", 2)
-        else
-            Framework.UI.Library:Notify("Now showing grouped pets by name", 2)
         end
     end
 })
@@ -6812,21 +6837,25 @@ EnchantBox:AddDropdown("EnchantPetSelect", {
         if Framework.State.showIndividualPetsEnchant then
             -- Individual mode: Extract pet IDs directly from display string
             for displayString, _ in pairs(Value) do
-                local petIdFragment = string.match(displayString, "#([%w]+)$")
+                -- Extract the pet ID from the end of the string (e.g., "#abc123")
+                local petIdFragment = string.match(displayString, "#(%w+)$")
                 
                 if petIdFragment then
-                    local petList = getEnchantablePets(Framework.State.enchantPetSortMethod, true)
-                    for _, petInfo in ipairs(petList) do
-                        if string.sub(petInfo.id, 1, 6) == petIdFragment then
-                            local petName = string.match(displayString, "^(.-)%s*{") or 
-                                          string.match(displayString, "^(.-)%s*%[") or
-                                          string.match(displayString, "^(.-)%s*%(")
-                            
-                            table.insert(Framework.State.selectedEnchantPets, {
-                                id = petInfo.id,
-                                name = petName or petInfo.name
-                            })
-                            break
+                    -- Find the full pet ID that starts with this fragment
+                    if Framework.Data.replicationData and Framework.Data.replicationData.Data and Framework.Data.replicationData.Data.Pets then
+                        for petId, petData in pairs(Framework.Data.replicationData.Data.Pets) do
+                            if string.sub(petId, 1, 6) == petIdFragment then
+                                -- Extract pet name for display
+                                local petName = string.match(displayString, "^(.-)%s*{?") or 
+                                              string.match(displayString, "^(.-)%s*%[?") or
+                                              string.match(displayString, "^(.-)%s*%(")
+                                
+                                table.insert(Framework.State.selectedEnchantPets, {
+                                    id = petId,
+                                    name = petName or petData.Name
+                                })
+                                break
+                            end
                         end
                     end
                 end
@@ -6834,18 +6863,26 @@ EnchantBox:AddDropdown("EnchantPetSelect", {
         else
             -- Grouped mode: Get all pet IDs for each selected pet name
             for displayString, _ in pairs(Value) do
+                -- Extract pet name from display string
                 local petName = string.match(displayString, "^(.-)%s*%(") or displayString
                 
-                local petList = getEnchantablePets(Framework.State.enchantPetSortMethod, false)
-                for _, petInfo in ipairs(petList) do
-                    if petInfo.name == petName then
-                        for _, petId in ipairs(petInfo.ids) do
-                            table.insert(Framework.State.selectedEnchantPets, {
-                                id = petId,
-                                name = petName
-                            })
+                -- Get all pet IDs for this pet name from current inventory
+                if Framework.Data.replicationData and Framework.Data.replicationData.Data and Framework.Data.replicationData.Data.Pets then
+                    for petId, petData in pairs(Framework.Data.replicationData.Data.Pets) do
+                        if petData.Name == petName then
+                            -- Check if this pet passes filters
+                            local petStats = Framework.Data.petStats[petName]
+                            local rarity = petStats and petStats.Rarity or "Unknown"
+                            
+                            -- Skip if rarity excluded or equipped (if filter enabled)
+                            if not Framework.State.excludedEnchantRarities[rarity] and 
+                               not (Framework.State.excludeEquippedEnchant and petData.Equipped) then
+                                table.insert(Framework.State.selectedEnchantPets, {
+                                    id = petId,
+                                    name = petName
+                                })
+                            end
                         end
-                        break
                     end
                 end
             end
@@ -6856,6 +6893,7 @@ EnchantBox:AddDropdown("EnchantPetSelect", {
             if Framework.State.showIndividualPetsEnchant then
                 Framework.UI.Library:Notify("Selected " .. count .. " specific pet(s) for enchanting", 3)
             else
+                -- Count unique pet names for the notification
                 local uniquePets = {}
                 for _, pet in ipairs(Framework.State.selectedEnchantPets) do
                     uniquePets[pet.name] = true
@@ -6865,8 +6903,6 @@ EnchantBox:AddDropdown("EnchantPetSelect", {
                 
                 Framework.UI.Library:Notify("Selected " .. count .. " pet instance(s) (" .. uniqueCount .. " unique) for enchanting", 3)
             end
-        else
-            Framework.UI.Library:Notify("No pets selected", 2)
         end
     end
 })
@@ -6875,7 +6911,32 @@ EnchantBox:AddDropdown("EnchantPetSelect", {
 local enchantRefreshTask = task.spawn(function()
     while getgenv().TapSimLoaded do
         task.wait(3)
-        refreshEnchantPetList()
+        if Framework.UI.Options.EnchantPetSelect then
+            -- Don't refresh while user is selecting pets
+            local currentSelection = Framework.UI.Options.EnchantPetSelect.Value
+            local hasSelection = false
+            if type(currentSelection) == "table" then
+                for _ in pairs(currentSelection) do
+                    hasSelection = true
+                    break
+                end
+            end
+            
+            -- Only refresh if no selection or forced refresh needed
+            if not hasSelection then
+                Framework:GetModule("Cache"):Invalidate("allGamePets")
+                Framework:GetModule("Cache"):Invalidate("ownedPetCounts")
+                
+                local petList = getEnchantablePets(Framework.State.enchantPetSortMethod, Framework.State.showIndividualPetsEnchant)
+                local displayValues = {}
+                
+                for _, pet in ipairs(petList) do
+                    table.insert(displayValues, pet.display)
+                end
+                
+                Framework.UI.Options.EnchantPetSelect:SetValues(#displayValues > 0 and displayValues or {"No pets available"})
+            end
+        end
     end
 end)
 
